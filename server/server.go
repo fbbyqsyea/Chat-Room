@@ -8,28 +8,39 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/fbbyqsyea/Chat-Room/common"
+	"github.com/sirupsen/logrus"
 )
 
 var (
 	clients    = make(map[net.Conn]string) // 存储所有连接的客户端
 	clientLock sync.Mutex                  // 用于保护clients的并发操作
+	logger     = logrus.New()              // 使用 logrus 记录日志
 )
+
+func init() {
+	// 设置log格式
+	logger.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+	})
+	// 可以将日志输出到文件，方便后期调试
+	// logger.SetOutput(os.Stdout)
+}
 
 func main() {
 	// 启动服务器监听
 	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
-		fmt.Println("Error starting server:", err)
+		logger.Fatalf("Error starting server: %v", err)
 		return
 	}
 	defer listener.Close()
-	fmt.Println("Chatroom server started on port 8080...")
+	logger.Info("Chatroom server started on port 8080...")
 
 	for {
 		// 等待客户端连接
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Connection error:", err)
+			logger.Errorf("Connection error: %v", err)
 			continue
 		}
 		// 为每个客户端开启一个goroutine
@@ -46,59 +57,83 @@ func handleClient(conn net.Conn) {
 
 	// 初次连接时要求用户输入昵称
 	reader := bufio.NewReader(conn)
-	nickname, err := reader.ReadString('\n')
-	if err != nil {
-		fmt.Println("Error reading nickname:", err)
-		return
-	}
-	nickname = nickname[:len(nickname)-1] // 去掉换行符
-	if nickname == "" {
-		fmt.Println("Invalid nickname.")
-
-		return
-	}
-
-	// 将客户端加入到clients
-	clientLock.Lock()
-	clients[conn] = nickname
-	clientLock.Unlock()
-
-	broadcast(common.SystemMessageType, fmt.Sprintf("%s has joined the chatroom.\n", nickname), conn)
-	fmt.Printf("%s connected.\n", nickname)
 
 	// 处理消息
 	for {
-		message, err := reader.ReadString('\n')
+		message := common.Message{}
+		data, err := reader.ReadString('\n')
 		if err != nil {
-			fmt.Printf("%s disconnected.\n", nickname)
-			break
+			logger.Errorf("Error reading message: %v", err)
+			return
 		}
-		broadcast(common.ChatMessageType, fmt.Sprintf("%s: %s", nickname, message), conn)
+
+		err = sonic.UnmarshalString(data, &message)
+		if err != nil {
+			logger.Errorf("Error unmarshalling message: %v", err)
+			continue
+		}
+
+		// 处理不同类型的消息
+		switch message.Type {
+		case common.IpMessageType:
+			ip := message.Message
+			// 将客户端加入到clients
+			clientLock.Lock()
+			clients[conn] = ip
+			clientLock.Unlock()
+
+			// 广播加入消息
+			broadcast(&common.Message{
+				Type:    common.JoinedMessageType,
+				From:    ip,
+				Message: fmt.Sprintf("%s has joined the chatroom.", ip),
+			}, conn)
+
+			logger.Infof("%s connected.", ip)
+
+		case common.ChatMessageType:
+			// 广播聊天消息
+			broadcast(&message, conn)
+		}
 	}
 }
 
 // 广播消息给所有客户端
-func broadcast(messageType string, message string, sender net.Conn) {
-	clientLock.Lock()
-	defer clientLock.Unlock()
+func broadcast(message *common.Message, sender net.Conn) {
+	// 使用 goroutine 进行并行发送，避免阻塞
 	for client := range clients {
-		if client != sender { // 不发给发送者
-			data, _ := sonic.MarshalString(common.Message{
-				Type:    messageType,
-				From:    clients[sender],
-				Message: message,
-			})
-			_, _ = client.Write([]byte(data + "\n"))
+		if client != sender { // 不发给发送者自己
+			data, err := sonic.MarshalString(message)
+			if err != nil {
+				logger.Errorf("Error marshalling message: %v", err)
+				continue
+			}
+			_, err = client.Write([]byte(data + "\n"))
+			if err != nil {
+				logger.Errorf("Error sending message to %s: %v", clients[client], err)
+			} else {
+				logger.Infof("Message sent to %s", clients[client])
+			}
 		}
 	}
-	fmt.Print(message) // 在服务端打印广播消息
 }
 
 // 客户端断开连接
 func disconnectClient(conn net.Conn) {
+	// 获取断开的客户端IP
+	ip := clients[conn]
+
+	// 从clients中删除该客户端
 	clientLock.Lock()
-	defer clientLock.Unlock()
-	nickname := clients[conn]
 	delete(clients, conn)
-	broadcast(common.SystemMessageType, fmt.Sprintf("%s has left the chatroom.\n", nickname), conn)
+	clientLock.Unlock()
+
+	// 广播离开消息
+	broadcast(&common.Message{
+		Type:    common.LeftMessageType,
+		From:    ip,
+		Message: fmt.Sprintf("%s has left the chatroom.", ip),
+	}, conn)
+
+	logger.Infof("%s disconnected.", ip)
 }

@@ -3,12 +3,13 @@ module github.com/fbbyqsyea/Chat-Room
 go 1.23.1
 
 require (
+	github.com/bytedance/sonic v1.12.7
 	github.com/gdamore/tcell/v2 v2.7.1
 	github.com/rivo/tview v0.0.0-20241227133733-17b7edb88c57
+	github.com/sirupsen/logrus v1.9.3
 )
 
 require (
-	github.com/bytedance/sonic v1.12.7 // indirect
 	github.com/bytedance/sonic/loader v0.2.2 // indirect
 	github.com/cloudwego/base64x v0.1.4 // indirect
 	github.com/gdamore/encoding v1.0.0 // indirect
